@@ -51,19 +51,22 @@ function calculateBonusByProfit(index, total, seller) {
  */
 function analyzeSalesData(data, options) {
   // Проверка входных данных
+  if (!data) {
+    throw new Error("Некорректные входные данные: data не определен");
+  }
+  
+  const sellers = data.sellers || data.customers;
+  
   if (
-    !data ||
-    !Array.isArray(data.customers) && !Array.isArray(data.sellers) || // поддержка обоих имён
+    !Array.isArray(sellers) ||
     !Array.isArray(data.products) ||
     !Array.isArray(data.purchase_records) ||
-    (data.sellers || data.customers).length === 0 ||
+    sellers.length === 0 ||
     data.products.length === 0 ||
     data.purchase_records.length === 0
-) {
+  ) {
     throw new Error("Некорректные входные данные");
-}
-
-  const sellers = data.sellers || data.customers;
+  }
 
   // Проверка наличия опций
   if (!options || !options.calculateRevenue || !options.calculateBonus) {
@@ -79,9 +82,10 @@ function analyzeSalesData(data, options) {
     throw new Error("calculateBonus должна быть функцией");
   }
 
-  // Индексация продавцов и товаров для быстрого доступа
+  // 🔧 Индексация товаров по sku и id
   const productIndex = data.products.reduce((index, product) => {
-    index[product.id] = product;
+    if (product.sku) index[product.sku] = product;
+    if (product.id) index[product.id] = product;
     return index;
   }, {});
 
@@ -94,7 +98,7 @@ function analyzeSalesData(data, options) {
     bonus: 0,
     products_sold: {},
     top_products: [],
-}));
+  }));
 
   const sellerIndex = sellerStats.reduce((index, stat) => {
     index[stat.seller_id] = stat;
@@ -108,48 +112,53 @@ function analyzeSalesData(data, options) {
     if (!Array.isArray(record.items)) return;
 
     record.items.forEach((item) => {
-      const product = productIndex[item.product_id];
+      // 🔧 Ищем товар по sku или product_id
+      const product = productIndex[item.sku] || productIndex[item.product_id];
       if (!product) return;
 
       const revenue = calculateRevenue(item, product);
 
       stat.revenue += revenue;
-      stat.profit += revenue - (product.cost_price || 0);
+      
+      // 🔧 Используем purchase_price для расчета прибыли
+      const costPrice = product.purchase_price || product.cost_price || 0;
+      const productCost = costPrice * item.quantity;
+      stat.profit += revenue - productCost;
+      
       stat.sales_count += item.quantity;
 
-      //  Накопление продаж по товарам
-      if (!stat.products_sold[item.product_id]) {
-        stat.products_sold[item.product_id] = 0;
+      // Накопление продаж по товарам
+      const productKey = item.sku || item.product_id;
+      if (!stat.products_sold[productKey]) {
+        stat.products_sold[productKey] = 0;
       }
-      stat.products_sold[item.product_id] += item.quantity;
+      stat.products_sold[productKey] += item.quantity;
     });
   });
-  // сортировка и финальный результат
+  
+  // Сортировка по прибыли (по убыванию)
   sellerStats.sort((a, b) => b.profit - a.profit);
 
-  // назначение бонусов и топ 10
+  // Назначение бонусов и топ 10
   sellerStats.forEach((seller, index) => {
-    seller.bonus = calculateBonusByProfit(index, sellerStats.length, seller);
+    seller.bonus = calculateBonus(index, sellerStats.length, seller);
 
     seller.top_products = Object.entries(seller.products_sold)
-      .map(([sku, quantity]) => ({ sku, quantity }))
-      .sort((a, b) => b.quantity - a.quantity)
+      .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
-      .map((item) => item.sku);
+      .map(([sku]) => sku);
   });
 
-  // итоговый результат
+  // Итоговый результат с округлением
   const result = sellerStats.map((seller) => ({
     seller_id: seller.seller_id,
     name: seller.name,
-    revenue: seller.revenue,
-    profit: seller.profit,
+    revenue: Math.round(seller.revenue * 100) / 100,
+    profit: Math.round(seller.profit * 100) / 100,
     sales_count: seller.sales_count,
-    bonus: seller.bonus,
+    bonus: Math.round(seller.bonus * 100) / 100,
     top_products: seller.top_products,
   }));
 
   return result;
 }
-
-
